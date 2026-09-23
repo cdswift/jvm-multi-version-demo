@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.example.multiversion</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>classloader-demo</artifactId>
+  <name>ClassLoader demo: loads each version in its own ClassLoader</name>
+
+  <dependencies>
+    <!-- The ONLY library on the application classpath: the shared interface.
+         commons-lang3 is deliberately absent. -->
+    <dependency>
+      <groupId>com.example.multiversion</groupId>
+      <artifactId>probe-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      Build-order only. Declaring the plugins as test-scoped dependencies,
+      with all transitive dependencies excluded, makes Maven build them before
+      this module. They are never on this module's compile or runtime
+      classpath. They get copied into target/plugins/ below instead.
+    -->
+    <dependency>
+      <groupId>com.example.multiversion</groupId>
+      <artifactId>probe-lang3-v1</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <exclusions><exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion></exclusions>
+    </dependency>
+    <dependency>
+      <groupId>com.example.multiversion</groupId>
+      <artifactId>probe-lang3-v2</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <exclusions><exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion></exclusions>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>classloader-demo</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <executions>
+          <!-- Application classpath: just probe-api -->
+          <execution>
+            <id>copy-libs</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+              <includeScope>runtime</includeScope>
+              <stripVersion>true</stripVersion>
+            </configuration>
+          </execution>
+
+          <!-- One self-contained directory per version: plugin + its commons-lang3.
+               The demo creates one URLClassLoader per directory. -->
+          <execution>
+            <id>copy-plugin-v1</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/plugins/v1</outputDirectory>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>com.example.multiversion</groupId>
+                  <artifactId>probe-lang3-v1</artifactId>
+                  <version>${project.version}</version>
+                </artifactItem>
+                <artifactItem>
+                  <groupId>org.apache.commons</groupId>
+                  <artifactId>commons-lang3</artifactId>
+                  <version>${lang3.old.version}</version>
+                </artifactItem>
+              </artifactItems>
+            </configuration>
+          </execution>
+          <execution>
+            <id>copy-plugin-v2</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/plugins/v2</outputDirectory>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>com.example.multiversion</groupId>
+                  <artifactId>probe-lang3-v2</artifactId>
+                  <version>${project.version}</version>
+                </artifactItem>
+                <artifactItem>
+                  <groupId>org.apache.commons</groupId>
+                  <artifactId>commons-lang3</artifactId>
+                  <version>${lang3.new.version}</version>
+                </artifactItem>
+              </artifactItems>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifest>
+              <mainClass>com.example.classloader.ClassLoaderDemo</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
+              <classpathLayoutType>custom</classpathLayoutType>
+              <customClasspathLayout>$${artifact.artifactId}.$${artifact.extension}</customClasspathLayout>
+            </manifest>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
