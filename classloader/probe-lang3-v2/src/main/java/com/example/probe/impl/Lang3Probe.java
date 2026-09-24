@@ -23,20 +23,12 @@ public class Lang3Probe implements TextProbe {
 
     @Override
     public String createNumber(String input) {
-        try {
-            return String.valueOf(NumberUtils.createNumber(input));
-        } catch (RuntimeException e) {
-            return "THREW " + e.getClass().getSimpleName() + ": " + e.getMessage();
-        }
+        return String.valueOf(NumberUtils.createNumber(input));
     }
 
     @Override
     public String isJavaAtLeast17() {
-        try {
-            return String.valueOf(SystemUtils.isJavaVersionAtLeast(JavaVersion.JAVA_1_7));
-        } catch (RuntimeException e) {
-            return "THREW " + e.getClass().getSimpleName() + ": " + e.getMessage();
-        }
+        return String.valueOf(SystemUtils.isJavaVersionAtLeast(JavaVersion.JAVA_1_7));
     }
 
     @Override

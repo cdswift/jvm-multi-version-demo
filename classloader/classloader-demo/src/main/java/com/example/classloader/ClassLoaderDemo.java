@@ -3,11 +3,13 @@ package com.example.classloader;
 import com.example.probe.TextProbe;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.CodeSource;
 import java.util.ServiceLoader;
 import java.util.stream.Stream;
 
@@ -35,6 +37,9 @@ import java.util.stream.Stream;
  * child, which loads its own copy. The shared {@code TextProbe} interface,
  * on the other hand, IS found in the parent, so both plugins implement the
  * same interface. That's what lets this class call them without reflection.
+ *
+ * <p>Every result is printed through {@link #show}, which prints the source
+ * line and expression that produced it.
  */
 public class ClassLoaderDemo {
 
@@ -52,68 +57,58 @@ public class ClassLoaderDemo {
     }
 
     /** Same name, different Class objects. */
-    static void classIdentity(ClassLoader v1, ClassLoader v2) throws Exception {
+    static void classIdentity(ClassLoader v1, ClassLoader v2) {
         section("Class identity = name + ClassLoader");
         String name = "org.apache.commons.lang3.StringUtils";
 
-        Class<?> c1 = v1.loadClass(name);
-        Class<?> c2 = v2.loadClass(name);
-
-        System.out.println("v1: " + c1.getName() + " loaded by '" + c1.getClassLoader().getName()
-                + "' from " + jarOf(c1));
-        System.out.println("v2: " + c2.getName() + " loaded by '" + c2.getClassLoader().getName()
-                + "' from " + jarOf(c2));
-        System.out.println("same name?  " + c1.getName().equals(c2.getName()));
-        System.out.println("same class? " + (c1 == c2));
+        Class<?> c1 = show("Class<?> c1 = v1.loadClass(name)", () -> v1.loadClass(name));
+        Class<?> c2 = show("Class<?> c2 = v2.loadClass(name)", () -> v2.loadClass(name));
+        show("c1.getName().equals(c2.getName())", () -> c1.getName().equals(c2.getName()));
+        show("c1 == c2", () -> c1 == c2);
 
         // The app's own loader can't see commons-lang3 at all:
-        try {
-            Class.forName(name);
-            System.out.println("app loader: found it (unexpected!)");
-        } catch (ClassNotFoundException e) {
-            System.out.println("app loader: ClassNotFoundException, not on the main classpath (as intended)");
-        }
+        show("Class.forName(name)  // app loader", () -> Class.forName(name));
     }
 
     /** The clean way: plugins implement an interface both sides share. */
     static void viaSharedInterface(ClassLoader v1, ClassLoader v2) {
         section("Calling each version through the shared TextProbe interface");
-        TextProbe p1 = ServiceLoader.load(TextProbe.class, v1).findFirst().orElseThrow();
-        TextProbe p2 = ServiceLoader.load(TextProbe.class, v2).findFirst().orElseThrow();
+        TextProbe p1 = show("TextProbe p1 = ServiceLoader.load(TextProbe.class, v1).findFirst().orElseThrow()",
+                () -> ServiceLoader.load(TextProbe.class, v1).findFirst().orElseThrow());
+        TextProbe p2 = show("TextProbe p2 = ServiceLoader.load(TextProbe.class, v2).findFirst().orElseThrow()",
+                () -> ServiceLoader.load(TextProbe.class, v2).findFirst().orElseThrow());
+        show("p1.getClass() == p2.getClass()", () -> p1.getClass() == p2.getClass());
 
-        System.out.println("plugin classes: " + p1.getClass().getName() + " vs " + p2.getClass().getName()
-                + " (same name, different class: " + (p1.getClass() != p2.getClass()) + ")");
-        System.out.println();
+        show("p1.libraryVersion()", p1::libraryVersion);
+        show("p2.libraryVersion()", p2::libraryVersion);
 
-        String v1Label = p1.libraryVersion();
-        String v2Label = p2.libraryVersion();
-        compare("NumberUtils.createNumber(\"#FADE\")", v1Label, p1.createNumber("#FADE"),
-                v2Label, p2.createNumber("#FADE"));
-        compare("SystemUtils.isJavaVersionAtLeast(JAVA_1_7)", v1Label, p1.isJavaAtLeast17(),
-                v2Label, p2.isJavaAtLeast17());
-        compare("StringUtils.abbreviate(\"Hello, multi-version world\", 12)",
-                v1Label, p1.abbreviate("Hello, multi-version world", 12),
-                v2Label, p2.abbreviate("Hello, multi-version world", 12));
+        show("p1.createNumber(\"#FADE\")", () -> p1.createNumber("#FADE"));
+        show("p2.createNumber(\"#FADE\")", () -> p2.createNumber("#FADE"));
+
+        show("p1.isJavaAtLeast17()", p1::isJavaAtLeast17);
+        show("p2.isJavaAtLeast17()", p2::isJavaAtLeast17);
+
+        show("p1.abbreviate(\"Hello, multi-version world\", 12)", () -> p1.abbreviate("Hello, multi-version world", 12));
+        show("p2.abbreviate(\"Hello, multi-version world\", 12)", () -> p2.abbreviate("Hello, multi-version world", 12));
     }
 
     /** The no-shared-interface way: works, but every call is stringly typed. */
     static void viaReflection(ClassLoader v1, ClassLoader v2) throws Exception {
         section("Calling each version directly via reflection (no shared interface)");
-        for (ClassLoader loader : new ClassLoader[] {v1, v2}) {
-            Class<?> stringUtils = loader.loadClass("org.apache.commons.lang3.StringUtils");
-            Object result = stringUtils.getMethod("capitalize", String.class).invoke(null, "reflection");
-            System.out.printf("  %-8s StringUtils.capitalize(\"reflection\") -> %s%n", loader.getName(), result);
+        Class<?> stringUtilsV1 = v1.loadClass("org.apache.commons.lang3.StringUtils");
+        Class<?> stringUtilsV2 = v2.loadClass("org.apache.commons.lang3.StringUtils");
 
-            // A method that only exists in the newer version fails at RUNTIME here,
-            // where the shading approach would have failed at compile time:
-            try {
-                Object truncated = stringUtils.getMethod("truncate", String.class, int.class)
-                        .invoke(null, "Hello, world", 5);
-                System.out.printf("  %-8s StringUtils.truncate(\"Hello, world\", 5) -> %s%n", loader.getName(), truncated);
-            } catch (NoSuchMethodException e) {
-                System.out.printf("  %-8s StringUtils.truncate(...) -> NoSuchMethodException (added in 3.5)%n", loader.getName());
-            }
-        }
+        show("stringUtilsV1.getMethod(\"capitalize\", String.class).invoke(null, \"reflection\")",
+                () -> stringUtilsV1.getMethod("capitalize", String.class).invoke(null, "reflection"));
+        show("stringUtilsV2.getMethod(\"capitalize\", String.class).invoke(null, \"reflection\")",
+                () -> stringUtilsV2.getMethod("capitalize", String.class).invoke(null, "reflection"));
+
+        // truncate() was added in 3.5. Via reflection, calling it on 3.0 fails at
+        // RUNTIME here, where the shading approach would fail at compile time:
+        show("stringUtilsV1.getMethod(\"truncate\", String.class, int.class).invoke(null, \"Hello, world\", 5)",
+                () -> stringUtilsV1.getMethod("truncate", String.class, int.class).invoke(null, "Hello, world", 5));
+        show("stringUtilsV2.getMethod(\"truncate\", String.class, int.class).invoke(null, \"Hello, world\", 5)",
+                () -> stringUtilsV2.getMethod("truncate", String.class, int.class).invoke(null, "Hello, world", 5));
     }
 
     /** The classic error: "X cannot be cast to X". */
@@ -121,19 +116,89 @@ public class ClassLoaderDemo {
         section("Objects from one version can't be used as the other's type");
         Class<?> probeV1 = v1.loadClass("com.example.probe.impl.Lang3Probe");
         Class<?> probeV2 = v2.loadClass("com.example.probe.impl.Lang3Probe");
-        Object instanceFromV1 = probeV1.getDeclaredConstructor().newInstance();
-        try {
-            probeV2.cast(instanceFromV1);
-        } catch (ClassCastException e) {
-            System.out.println("ClassCastException: " + e.getMessage());
-            System.out.println("  instance's class was defined by '" + probeV1.getClassLoader().getName()
-                    + "', target class by '" + probeV2.getClassLoader().getName() + "'");
-        }
-        System.out.println("...but as the shared interface it's fine: "
-                + (instanceFromV1 instanceof TextProbe));
+        Object fromV1 = probeV1.getDeclaredConstructor().newInstance();
+
+        show("fromV1.getClass()", fromV1::getClass);
+        show("probeV2", () -> probeV2);
+        show("probeV2.cast(fromV1)", () -> probeV2.cast(fromV1));
+        show("fromV1 instanceof TextProbe  // shared interface", () -> fromV1 instanceof TextProbe);
     }
 
     // ---------------------------------------------------------------------
+
+    /** Like Supplier, but may throw, so failures can be shown too. */
+    @FunctionalInterface
+    interface Code<T> {
+        T run() throws Exception;
+    }
+
+    /** Numbering for the output: [section.step], e.g. [2.3]. */
+    static int sectionNo = 0;
+    static int stepNo = 0;
+
+    /**
+     * Prints a numbered block with the calling line ({@code ClassLoaderDemo.java:NN})
+     * and {@code source}, then runs {@code code} and prints its result or the
+     * exception it threw. Returns the result, or null if it threw.
+     */
+    static <T> T show(String source, Code<T> code) {
+        String where = StackWalker.getInstance()
+                .walk(frames -> frames.skip(1).findFirst())
+                .map(f -> f.getFileName() + ":" + f.getLineNumber())
+                .orElse("?");
+        System.out.println();
+        System.out.println("[" + sectionNo + "." + (++stepNo) + "] " + where);
+        System.out.println("    code:      " + source);
+        try {
+            T result = code.run();
+            System.out.println("    result:    " + format(result));
+            return result;
+        } catch (Exception e) {
+            Throwable t = e instanceof InvocationTargetException ite ? ite.getCause() : e;
+            System.out.println("    threw:     " + t.getClass().getName() + ": " + t.getMessage());
+            printPluginFrames(t);
+            return null;
+        }
+    }
+
+    /**
+     * If {@code t} came from inside a plugin, prints where the library threw it
+     * and which plugin line called the library. Stack frames include the
+     * ClassLoader name, e.g. {@code lang3-v1//org.apache.commons.lang3...}.
+     */
+    static void printPluginFrames(Throwable t) {
+        StackTraceElement[] stack = t.getStackTrace();
+        for (StackTraceElement frame : stack) {
+            if (frame.getClassName().startsWith("com.example.probe.impl.")) {
+                System.out.println("    thrown at: " + stack[0]);
+                System.out.println("    called by: " + frame);
+                return;
+            }
+        }
+    }
+
+    static String format(Object value) {
+        if (value instanceof String s) {
+            return '"' + s + '"';
+        }
+        if (value instanceof Class<?> c) {
+            return "class " + c.getName() + " " + origin(c);
+        }
+        if (value == null || value instanceof Boolean || value instanceof Number) {
+            return String.valueOf(value);
+        }
+        return "instance of " + value.getClass().getName() + " " + origin(value.getClass());
+    }
+
+    /** Where a class came from, e.g. {@code [loader 'lang3-v1', commons-lang3-3.0.jar]}. */
+    static String origin(Class<?> c) {
+        ClassLoader loader = c.getClassLoader();
+        String loaderName = loader == null ? "bootstrap" : loader.getName();
+        CodeSource src = c.getProtectionDomain().getCodeSource();
+        return src == null
+                ? "[loader '" + loaderName + "']"
+                : "[loader '" + loaderName + "', " + jarOf(c) + "]";
+    }
 
     /**
      * A fresh loader over every jar in {@code dir}. The parent is the app loader
@@ -173,14 +238,13 @@ public class ClassLoaderDemo {
         return path.substring(path.lastIndexOf('/') + 1);
     }
 
-    static void compare(String call, String v1Label, String v1Result, String v2Label, String v2Result) {
-        System.out.println(call);
-        System.out.printf("  %-6s -> %s%n", v1Label, v1Result);
-        System.out.printf("  %-6s -> %s%n", v2Label, v2Result);
-    }
-
     static void section(String title) {
+        sectionNo++;
+        stepNo = 0;
         System.out.println();
-        System.out.println("=== " + title + " ===");
+        System.out.println();
+        System.out.println("=".repeat(90));
+        System.out.println(sectionNo + ". " + title);
+        System.out.println("=".repeat(90));
     }
 }

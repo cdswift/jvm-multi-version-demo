@@ -12,10 +12,10 @@ public interface TextProbe {
     /** Version of commons-lang3 this plugin was loaded with. */
     String libraryVersion();
 
-    /** Result of {@code NumberUtils.createNumber(input)}, or the error it threw. */
+    /** Result of {@code NumberUtils.createNumber(input)}. Library exceptions propagate. */
     String createNumber(String input);
 
-    /** Result of {@code SystemUtils.isJavaVersionAtLeast(JAVA_1_7)}, or the error it threw. */
+    /** Result of {@code SystemUtils.isJavaVersionAtLeast(JAVA_1_7)}. Library exceptions propagate. */
     String isJavaAtLeast17();
 
     /** Result of {@code StringUtils.abbreviate(text, maxWidth)}. */

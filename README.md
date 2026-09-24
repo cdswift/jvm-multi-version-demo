@@ -172,6 +172,25 @@ plugin has its own copy of it.
 - The classic `ClassCastException: Lang3Probe cannot be cast to Lang3Probe`
   when an object from one loader is cast to the other loader's class.
 
+### Reading the output
+
+Each call is printed as a numbered block. `[2.6]` is section 2, step 6, and
+the line after the number is where the call is in `ClassLoaderDemo.java`:
+
+```
+[2.6] ClassLoaderDemo.java:85
+    code:      p1.createNumber("#FADE")
+    threw:     java.lang.NumberFormatException: #FADE is not a valid number.
+    thrown at: lang3-v1//org.apache.commons.lang3.math.NumberUtils.createNumber(NumberUtils.java:545)
+    called by: lang3-v1//com.example.probe.impl.Lang3Probe.createNumber(Lang3Probe.java:26)
+```
+
+- `result:` or `threw:`: what the call returned, or the exception it threw.
+  Classes are shown with the loader and jar they came from.
+- `thrown at:` / `called by:`: for exceptions from inside a plugin, the
+  library line that threw and the plugin line that called it. The
+  `lang3-v1//` prefix is the name of the ClassLoader that defined the class.
+
 ### Gotchas
 
 - **Thread context ClassLoader.** Libraries that call
