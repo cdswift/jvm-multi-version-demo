@@ -23,6 +23,15 @@
     <module>classloader/probe-lang3-v1</module>
     <module>classloader/probe-lang3-v2</module>
     <module>classloader/classloader-demo</module>
+
+    <!-- Approach 1 applied: a 1.0 -> 2.0 protocol bridge with MapStruct -->
+    <module>bridge/acme-v1/acme-model</module>
+    <module>bridge/acme-v1/acme-wire</module>
+    <module>bridge/acme-v2/acme-model</module>
+    <module>bridge/acme-v2/acme-wire</module>
+    <module>bridge/acme-v1-shaded</module>
+    <module>bridge/acme-v2-shaded</module>
+    <module>bridge/bridge-app</module>
   </modules>
 
   <properties>
@@ -32,6 +41,8 @@
     <!-- The "guinea pig": two versions of the same library, 13 years apart -->
     <lang3.old.version>3.0</lang3.old.version>
     <lang3.new.version>3.17.0</lang3.new.version>
+
+    <mapstruct.version>1.6.3</mapstruct.version>
   </properties>
 
   <build>

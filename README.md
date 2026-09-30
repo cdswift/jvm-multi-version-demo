@@ -5,6 +5,10 @@ each one independently. The test subject is Apache Commons Lang, versions
 **3.0** (2011) and **3.17.0** (2024). Both versions put their classes in the
 same package, `org.apache.commons.lang3`.
 
+A third example, [the bridge](#example-a-10--20-protocol-bridge), applies
+shading to a realistic case: a bundle of libraries (model, codec and TCP
+transport) in two versions, with a MapStruct translator between them.
+
 | | Maven Shade relocation | Isolated ClassLoaders |
 |---|---|---|
 | When the versions are separated | Build time | Runtime |
@@ -27,6 +31,7 @@ mvn package
 
 java -jar shading/shading-demo/target/shading-demo.jar
 java -jar classloader/classloader-demo/target/classloader-demo.jar
+java -jar bridge/bridge-app/target/bridge-app.jar
 ```
 
 Use `mvn package`, not `mvn compile`. The shaded jars only exist after the
@@ -45,6 +50,14 @@ classloader/
   probe-lang3-v1/                Lang3Probe implemented against lang3 3.0
   probe-lang3-v2/                Lang3Probe implemented against lang3 3.17.0 (same class name!)
   classloader-demo/              the host: one URLClassLoader per version
+bridge/
+  acme-v1/acme-model/            com.acme:acme-model:1.0  fake protocol object model
+  acme-v1/acme-wire/             com.acme:acme-wire:1.0   text codec + TCP transport (depends on acme-model)
+  acme-v2/acme-model/            com.acme:acme-model:2.0  same packages, changed model
+  acme-v2/acme-wire/             com.acme:acme-wire:2.0   binary codec + TCP transport
+  acme-v1-shaded/                no code: both 1.0 jars as one, relocated to v1.com.acme.*
+  acme-v2-shaded/                no code: both 2.0 jars as one, relocated to v2.com.acme.*
+  bridge-app/                    MapStruct mappers, OrderBridge, and the demo runner
 ```
 
 ---
@@ -210,11 +223,140 @@ the line after the number is where the call is in `ClassLoaderDemo.java`:
 
 ---
 
+## Example: a 1.0 → 2.0 protocol bridge
+
+The case this example models: two versions of a **bundle of libraries that
+call each other**, where you need to translate data between the versions'
+object models *and* use each version's own support libraries for encoding
+and send/receive.
+
+### The fake bundle
+
+`com.acme` stands in for a real company library. Each version is two jars
+with **identical package and class names**:
+
+| | 1.0 | 2.0 |
+|---|---|---|
+| `acme-model` | `Order { id, long amountCents, Status, Customer, List<Item> items }` | `Order { id, BigDecimal amount, Status, Customer, List<LineItem> lines, channel }` |
+| | `Status { NEW, SENT }` | `Status { NEW, SHIPPED, CANCELLED }` |
+| | `Customer` class, `Item { sku, qty }` | `Customer` **record**, `LineItem { sku, quantity }` |
+| `acme-wire` codec | `TextCodec`: `id\|cents\|status\|name\|email\|sku:qty,...` | `BinaryCodec`: magic `AC02` + `DataOutput` fields |
+| `acme-wire` framing | newline-delimited | 4-byte length prefix |
+| codec lookup | `ServiceLoader` via `META-INF/services` | same |
+
+`acme-wire` depends on `acme-model`, and its `OrderReceiver` and
+`OrderSender` run real TCP sockets.
+
+### The pipeline
+
+Everything runs inside one JVM:
+
+```
+upstream                        OrderBridge                               downstream
+v1 OrderSender ──TCP, 1.0──▶ v1 OrderReceiver → OrderV1ToV2 → v2 OrderSender ──TCP, 2.0──▶ v2 OrderReceiver
+                              (TextCodec)       (MapStruct)    (BinaryCodec)                 (BinaryCodec)
+```
+
+[`OrderBridge.java`](bridge/bridge-app/src/main/java/com/example/bridge/OrderBridge.java)
+is the whole bridge, about 30 lines of logic. Every ACME class in it is
+referenced by its relocated name (`v1.com.acme.wire.OrderReceiver`,
+`v2.com.acme.model.Order`, ...), so the compiler checks all of it.
+
+### Shading a bundle
+
+Each wrapper ([`acme-v1-shaded/pom.xml`](bridge/acme-v1-shaded/pom.xml))
+bundles **both** jars of its version with one include, `com.acme:*`, and
+relocates the whole tree with **one** rule, `com.acme` → `v1.com.acme`.
+The shade plugin also rewrites the references *between* the jars, so the
+relocated `acme-wire` calls the relocated `acme-model`.
+
+Two details matter for a bundle:
+
+- **Include the transitive jars.** The wrapper depends only on `acme-wire`;
+  `acme-model` comes in transitively, and `com.acme:*` bundles it too. Because
+  the dependency is `<optional>`, anything *not* bundled would be missing from
+  the consumer's classpath entirely.
+- **`ServicesResourceTransformer` is required here.** `Codecs.load()` finds
+  the codec with `ServiceLoader`. The transformer renames
+  `META-INF/services/com.acme.wire.OrderCodec` to
+  `META-INF/services/v1.com.acme.wire.OrderCodec` and rewrites the class name
+  inside it. Without it, `Codecs.load()` throws at runtime.
+
+### The translators (MapStruct)
+
+[MapStruct](https://mapstruct.org) is an annotation processor: it generates
+mapping code at compile time from an interface. You write only what differs
+between the versions:
+
+```java
+@Mapper(unmappedTargetPolicy = ReportingPolicy.ERROR)
+public interface OrderV1ToV2 {
+    @Mapping(target = "amount", source = "amountCents", qualifiedByName = "centsToDollars")
+    @Mapping(target = "lines", source = "items")
+    @Mapping(target = "channel", constant = "LEGACY")
+    v2.com.acme.model.Order toV2(v1.com.acme.model.Order order);
+
+    @Mapping(target = "quantity", source = "qty")
+    v2.com.acme.model.LineItem toV2(v1.com.acme.model.Item item);
+
+    @ValueMapping(source = "SENT", target = "SHIPPED")
+    v2.com.acme.model.Status toV2(v1.com.acme.model.Status status);
+    ...
+}
+```
+
+`id`, `status`, `sku`, and the nested `Customer` (class → record) map
+automatically. The generated `OrderV1ToV2Impl` is plain getter/setter code;
+after a build it's in
+`bridge/bridge-app/target/generated-sources/annotations/`.
+
+MapStruct can do this only because shading gave both versions different
+names. With ClassLoaders, both `Order` classes are called
+`com.acme.model.Order`, and no single source file can refer to both.
+
+### What the compiler catches
+
+These are the actual build errors when a mapping is missing, checked by
+deleting one line at a time from the mappers:
+
+| Change | Build error |
+|---|---|
+| Remove the `channel` mapping from `OrderV1ToV2` (as if 2.0 had just added the field) | `Unmapped target property: "channel".` |
+| Remove the `CANCELLED` mapping from `OrderV2ToV1` | `The following constants from the source enum have no corresponding constant in the target enum and must be be mapped via adding additional mappings: CANCELLED.` |
+| Remove `ignoreUnmappedSourceProperties = "channel"` from `OrderV2ToV1` | `Unmapped source property: "channel".` |
+
+The last one comes from `unmappedSourcePolicy = ERROR` on the 2.0 → 1.0
+mapper. That direction loses data, and this setting makes every loss an
+explicit, reviewed line of code.
+
+### What the demo shows
+
+1. Both bundles loaded by the **same** ClassLoader, each version's codec
+   found through `ServiceLoader`, and the generated mapper class.
+2. The pipeline started on free local ports.
+3. Three 1.0 orders sent upstream. Each is traced through every hop: the
+   text payload, the decoded 1.0 object, the MapStruct result, the binary
+   2.0 payload, and the object the 2.0 receiver decoded.
+4. Translating back 2.0 → 1.0: `SHIPPED` → `SENT` with `channel` dropped, then
+   a `CANCELLED` order failing with the declared exception.
+
+### Not isolated by shading
+
+Both bundles share one JVM, so anything JVM-wide can still collide:
+listening ports (the demo uses port 0 everywhere), JMX MBean names, system
+properties, security providers, and static registries that hold anything
+other than classes. Give each version's stack its own configuration.
+
+---
+
 ## Which one should I use?
 
 - **The versions are known when you build, and the library is plain Java.**
   Use shading. You get normal code and compile-time checking.
 - **Versions are picked or swapped at runtime, the library uses JNI, or it
   does a lot of reflection by class name.** Use ClassLoaders.
+- **You need to translate data between the versions' object models.** Use
+  shading, so one piece of code can see both models and MapStruct can
+  generate the mapping. See the [bridge example](#example-a-10--20-protocol-bridge).
 - **JPMS modules.** The ClassLoader approach has a module-system version:
   `ModuleLayer.defineModulesWithOneLoader`, one layer per version.
